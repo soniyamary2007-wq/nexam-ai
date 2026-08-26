@@ -1,0 +1,142 @@
+import { DatabaseSync } from 'node:sqlite';
+
+const db = new DatabaseSync('nexam.db');
+db.exec('PRAGMA foreign_keys = ON;');
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS colleges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  state TEXT NOT NULL,
+  place TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS departments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  college_id INTEGER NOT NULL REFERENCES colleges(id) ON DELETE CASCADE,
+  name TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS classes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  section TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('student','faculty','admin')),
+  college_id INTEGER REFERENCES colleges(id),
+  department_id INTEGER REFERENCES departments(id),
+  class_id INTEGER REFERENCES classes(id),
+  face_descriptor TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS faculty_classes (
+  faculty_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  PRIMARY KEY (faculty_id, class_id)
+);
+
+CREATE TABLE IF NOT EXISTS exams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  subject TEXT,
+  description TEXT,
+  difficulty TEXT,
+  duration INTEGER NOT NULL,
+  total_marks INTEGER,
+  proctoring_enabled INTEGER DEFAULT 1,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS exam_classes (
+  exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+  class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  PRIMARY KEY (exam_id, class_id)
+);
+
+CREATE TABLE IF NOT EXISTS questions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+  question TEXT NOT NULL,
+  option_a TEXT NOT NULL,
+  option_b TEXT NOT NULL,
+  option_c TEXT NOT NULL,
+  option_d TEXT NOT NULL,
+  correct_index INTEGER NOT NULL,
+  marks INTEGER DEFAULT 5
+);
+
+CREATE TABLE IF NOT EXISTS submissions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES users(id),
+  score INTEGER NOT NULL,
+  total_marks INTEGER NOT NULL,
+  incident_count INTEGER DEFAULT 0,
+  auto_submitted INTEGER DEFAULT 0,
+  submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(exam_id, student_id)
+);
+`);
+
+const collegeCount = db.prepare('SELECT COUNT(*) AS c FROM colleges').get().c;
+
+if (collegeCount === 0) {
+  const insertCollege = db.prepare('INSERT INTO colleges (name, state, place) VALUES (?, ?, ?)');
+  const insertDept = db.prepare('INSERT INTO departments (college_id, name) VALUES (?, ?)');
+  const insertClass = db.prepare('INSERT INTO classes (department_id, name, section) VALUES (?, ?, ?)');
+
+  const seedData = [
+    {
+      name: 'Vels Institute of Science, Technology & Advanced Studies',
+      state: 'Tamil Nadu',
+      place: 'Chennai',
+      departments: ['Computer Science', 'Information Technology', 'ECE'],
+    },
+    {
+      name: 'Anna University',
+      state: 'Tamil Nadu',
+      place: 'Chennai',
+      departments: ['Computer Science', 'Mechanical', 'Civil'],
+    },
+    {
+      name: 'VIT Vellore',
+      state: 'Tamil Nadu',
+      place: 'Vellore',
+      departments: ['Computer Science', 'Electronics'],
+    },
+  ];
+
+  const years = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
+  const sections = ['A', 'B'];
+
+  for (const college of seedData) {
+    const collegeResult = insertCollege.run(college.name, college.state, college.place);
+    const collegeId = collegeResult.lastInsertRowid;
+
+    for (const deptName of college.departments) {
+      const deptResult = insertDept.run(collegeId, deptName);
+      const deptId = deptResult.lastInsertRowid;
+
+      for (const year of years) {
+        for (const section of sections) {
+          insertClass.run(deptId, year, section);
+        }
+      }
+    }
+  }
+
+  console.log('Seeded starter colleges, departments, and classes.');
+}
+
+export default db;
