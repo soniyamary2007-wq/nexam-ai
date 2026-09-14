@@ -1,3 +1,4 @@
+import SnapshotReview from './pages/SnapshotReview';
 import StudentReport from './pages/StudentReport';
 import { Navigate, Route, Routes } from "react-router-dom";
 
@@ -25,6 +26,7 @@ function App() {
       <Route path="/create-exam" element={<CreateExam />} />
       <Route path="*" element={<Navigate to="/" replace />} />
       <Route path="/student-report" element={<StudentReport />} />
+      <Route path="/faculty/exam/:examId/snapshots" element={<SnapshotReview />} />
     </Routes>
   );
 }

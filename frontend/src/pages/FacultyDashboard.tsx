@@ -43,7 +43,8 @@ function FacultyDashboard() {
 
   const [exams, setExams] = useState<Exam[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
-    const [selectedExam, setSelectedExam] = useState('all');
+  const [reattemptRequests, setReattemptRequests] = useState<any[]>([]);
+  const [selectedExam, setSelectedExam] = useState('all');
   const [loading, setLoading] = useState(true);
 
   interface FullSubmission extends Submission {
@@ -67,10 +68,12 @@ function FacultyDashboard() {
         Promise.all([
       fetch(`${API_BASE}/exams/for-faculty?facultyId=${currentUser.id}`).then((r) => r.json()),
       fetch(`${API_BASE}/exams/submissions-for-faculty?facultyId=${currentUser.id}`).then((r) => r.json()),
+      fetch(`${API_BASE}/exams/reattempt-requests?facultyId=${currentUser.id}`).then((r) => r.json()),
     ])
-      .then(([examData, subData]) => {
+      .then(([examData, subData, reqData]) => {
         setExams(examData.exams || []);
         setSubmissions(subData.submissions || []);
+        setReattemptRequests(reqData.requests || []);
       })
       .finally(() => setLoading(false));
   }, [currentUser, navigate]);
@@ -85,6 +88,21 @@ function FacultyDashboard() {
 
   const totalIncidents = submissions.reduce((total, s) => total + (s.incident_count || 0), 0);
 
+    async function resolveReattempt(requestId: number, decision: 'approved' | 'denied') {
+    try {
+      const response = await fetch(`${API_BASE}/exams/reattempt-requests/${requestId}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      });
+
+      if (response.ok) {
+        setReattemptRequests((current) => current.filter((r) => r.id !== requestId));
+      }
+    } catch {
+      window.alert('Could not connect to the server.');
+    }
+  }
   function logout() {
     localStorage.removeItem('nexam_current_user');
     navigate('/login');
@@ -189,8 +207,39 @@ function FacultyDashboard() {
             ))}
           </section>
         )}
+                {reattemptRequests.length > 0 && (
+          <section className="portal-panel portal-submissions">
+            <div className="portal-table-title">
+              <div>
+                <h2>Reattempt requests</h2>
+                <p>Students requesting permission to retake an exam.</p>
+              </div>
+            </div>
+            <div className="portal-table-scroll">
+              <table className="portal-table">
+                <thead>
+                  <tr><th>Student</th><th>Exam</th><th>Reason</th><th>Requested</th><th>Action</th></tr>
+                </thead>
+                <tbody>
+                  {reattemptRequests.map((req) => (
+                    <tr key={req.id}>
+                      <td><strong>{req.student_name}</strong><br /><small>{req.student_email}</small></td>
+                      <td>{req.exam_title}</td>
+                      <td>{req.reason || '—'}</td>
+                      <td>{new Date(req.requested_at).toLocaleString('en-IN')}</td>
+                      <td style={{ display: 'flex', gap: 8 }}>
+                        <button className="exam-outline-btn" onClick={() => resolveReattempt(req.id, 'approved')}>Approve</button>
+                        <button className="faculty-delete-btn" onClick={() => resolveReattempt(req.id, 'denied')}>Deny</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
 
-                <section className="portal-panel portal-submissions">
+          <section className="portal-panel portal-submissions">
           <div className="portal-table-title">
             <div>
               <h2>Evaluation and integrity queue</h2>
@@ -216,6 +265,7 @@ function FacultyDashboard() {
                     <th>Score</th>
                     <th>Integrity status</th>
                     <th>Submitted</th>
+                    <th>Proctoring</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -242,6 +292,11 @@ function FacultyDashboard() {
                           {Boolean(sub.auto_submitted) && <small className="portal-table-sub">Auto-submitted</small>}
                         </td>
                         <td>{new Date(sub.submitted_at).toLocaleString('en-IN')}</td>
+                        <td>
+                          <Link to={`/faculty/exam/${sub.exam_id}/snapshots`} className="exam-outline-btn">
+                            View snapshots
+                          </Link>
+                        </td>
                       </tr>
                     );
                   })}

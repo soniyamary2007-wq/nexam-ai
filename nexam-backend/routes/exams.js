@@ -1,7 +1,48 @@
 import express from 'express';
 import db from '../db.js';
 
+
+
 const router = express.Router();
+
+async function getOrCreateDailyRoom(examId) {
+  const roomName = `nexam-${examId}`;
+
+  const existing = await fetch(`https://api.daily.co/v1/rooms/${roomName}`, {
+    headers: { Authorization: `Bearer ${process.env.DAILY_API_KEY}` },
+  });
+
+  if (existing.ok) {
+    const data = await existing.json();
+    return data.url;
+  }
+
+  const created = await fetch('https://api.daily.co/v1/rooms', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.DAILY_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: roomName,
+      properties: {
+        enable_chat: false,
+        enable_screenshare: false,
+        start_video_off: false,
+        start_audio_off: true,
+        max_participants: 10,
+      },
+    }),
+  });
+
+  if (!created.ok) {
+    const errText = await created.text();
+    throw new Error(`Failed to create Daily room: ${errText}`);
+  }
+
+  const data = await created.json();
+  return data.url;
+}
 
 // ---------- Create exam (faculty) ----------
 
@@ -142,9 +183,158 @@ router.get('/students-for-class', (req, res) => {
 
   res.json({ students: result });
 });
+
+router.get('/submissions-for-faculty', (req, res) => {
+  const { facultyId } = req.query;
+
+  if (!facultyId) {
+    return res.status(400).json({ error: 'facultyId is required.' });
+  }
+
+  const submissions = db.prepare(`
+    SELECT s.*, u.name AS student_name, u.email AS student_email, e.title AS exam_title
+    FROM submissions s
+    JOIN exams e ON e.id = s.exam_id
+    JOIN users u ON u.id = s.student_id
+    WHERE e.created_by = ?
+    ORDER BY s.submitted_at DESC
+  `).all(facultyId);
+
+  res.json({ submissions });
+});
 // ---------- Get single exam with questions (for taking the exam) ----------
 
+router.post('/reattempt-request', (req, res) => {
+  try {
+    const { examId, studentId, reason } = req.body;
+
+    if (!examId || !studentId) {
+      return res.status(400).json({ error: 'examId and studentId are required.' });
+    }
+
+    const existing = db.prepare(
+      `SELECT id FROM reattempt_requests WHERE exam_id = ? AND student_id = ? AND status = 'pending'`
+    ).get(examId, studentId);
+
+    if (existing) {
+      return res.status(409).json({ error: 'You already have a pending request for this exam.' });
+    }
+
+    db.prepare(
+      'INSERT INTO reattempt_requests (exam_id, student_id, reason) VALUES (?, ?, ?)',
+    ).run(examId, studentId, reason || null);
+
+    res.status(201).json({ requested: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to submit request.', details: err.message });
+  }
+});
+router.get('/reattempt-requests', (req, res) => {
+  const { facultyId } = req.query;
+
+  if (!facultyId) {
+    return res.status(400).json({ error: 'facultyId is required.' });
+  }
+
+  const requests = db.prepare(`
+    SELECT rr.*, u.name AS student_name, u.email AS student_email, e.title AS exam_title
+    FROM reattempt_requests rr
+    JOIN users u ON u.id = rr.student_id
+    JOIN exams e ON e.id = rr.exam_id
+    WHERE e.created_by = ? AND rr.status = 'pending'
+    ORDER BY rr.requested_at DESC
+  `).all(facultyId);
+
+  res.json({ requests });
+});
+router.post('/reattempt-requests/:id/resolve', (req, res) => {
+  try {
+    const { decision } = req.body;
+    const requestId = req.params.id;
+
+    if (!['approved', 'denied'].includes(decision)) {
+      return res.status(400).json({ error: 'decision must be approved or denied.' });
+    }
+
+    const request = db.prepare('SELECT * FROM reattempt_requests WHERE id = ?').get(requestId);
+
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found.' });
+    }
+
+    db.prepare(
+      `UPDATE reattempt_requests SET status = ?, resolved_at = datetime('now') WHERE id = ?`,
+    ).run(decision, requestId);
+
+    if (decision === 'approved') {
+      db.prepare('DELETE FROM submissions WHERE exam_id = ? AND student_id = ?')
+        .run(request.exam_id, request.student_id);
+    }
+
+    res.json({ resolved: decision });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to resolve request.', details: err.message });
+  }
+});
+router.get('/:id/video-room', async (req, res) => {
+  try {
+    const roomUrl = await getOrCreateDailyRoom(req.params.id);
+    res.json({ roomUrl });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to get video room.', details: err.message });
+  }
+});
+router.post('/snapshot', (req, res) => {
+  try {
+    const { examId, studentId, image } = req.body;
+
+    if (!examId || !studentId || !image) {
+      return res.status(400).json({ error: 'examId, studentId, and image are required.' });
+    }
+
+    db.prepare(
+      'INSERT INTO exam_snapshots (exam_id, student_id, image) VALUES (?, ?, ?)',
+    ).run(examId, studentId, image);
+
+    res.status(201).json({ saved: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to save snapshot.', details: err.message });
+  }
+});
+
+router.get('/:id/snapshots', (req, res) => {
+  const { studentId } = req.query;
+  const examId = req.params.id;
+
+  const query = studentId
+    ? `SELECT es.*, u.name AS student_name FROM exam_snapshots es JOIN users u ON u.id = es.student_id WHERE es.exam_id = ? AND es.student_id = ? ORDER BY es.captured_at DESC`
+    : `SELECT es.*, u.name AS student_name FROM exam_snapshots es JOIN users u ON u.id = es.student_id WHERE es.exam_id = ? ORDER BY es.captured_at DESC`;
+
+  const snapshots = studentId
+    ? db.prepare(query).all(examId, studentId)
+    : db.prepare(query).all(examId);
+
+  res.json({ snapshots });
+});
+
+router.get('/:id/snapshot-students', (req, res) => {
+  const students = db.prepare(`
+    SELECT DISTINCT es.student_id, u.name AS student_name, MAX(es.captured_at) AS last_seen
+    FROM exam_snapshots es
+    JOIN users u ON u.id = es.student_id
+    WHERE es.exam_id = ?
+    GROUP BY es.student_id
+    ORDER BY last_seen DESC
+  `).all(req.params.id);
+
+  res.json({ students });
+});
 router.get('/:id', (req, res) => {
+
   const exam = db.prepare('SELECT * FROM exams WHERE id = ?').get(req.params.id);
 
   if (!exam) {
@@ -337,5 +527,87 @@ router.get('/students-for-class', (req, res) => {
   }));
 
   res.json({ students: result });
+});
+// ---------- Student: request a reattempt ----------
+
+router.post('/reattempt-request', (req, res) => {
+  try {
+    const { examId, studentId, reason } = req.body;
+
+    if (!examId || !studentId) {
+      return res.status(400).json({ error: 'examId and studentId are required.' });
+    }
+
+    const existing = db.prepare(
+      `SELECT id FROM reattempt_requests WHERE exam_id = ? AND student_id = ? AND status = 'pending'`
+    ).get(examId, studentId);
+
+    if (existing) {
+      return res.status(409).json({ error: 'You already have a pending request for this exam.' });
+    }
+
+    db.prepare(
+      'INSERT INTO reattempt_requests (exam_id, student_id, reason) VALUES (?, ?, ?)',
+    ).run(examId, studentId, reason || null);
+
+    res.status(201).json({ requested: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to submit request.', details: err.message });
+  }
+});
+
+// ---------- Faculty: list pending reattempt requests for their exams ----------
+
+router.get('/reattempt-requests', (req, res) => {
+  const { facultyId } = req.query;
+
+  if (!facultyId) {
+    return res.status(400).json({ error: 'facultyId is required.' });
+  }
+
+  const requests = db.prepare(`
+    SELECT rr.*, u.name AS student_name, u.email AS student_email, e.title AS exam_title
+    FROM reattempt_requests rr
+    JOIN users u ON u.id = rr.student_id
+    JOIN exams e ON e.id = rr.exam_id
+    WHERE e.created_by = ? AND rr.status = 'pending'
+    ORDER BY rr.requested_at DESC
+  `).all(facultyId);
+
+  res.json({ requests });
+});
+
+// ---------- Faculty: approve or deny a reattempt request ----------
+
+router.post('/reattempt-requests/:id/resolve', (req, res) => {
+  try {
+    const { decision } = req.body; // 'approved' or 'denied'
+    const requestId = req.params.id;
+
+    if (!['approved', 'denied'].includes(decision)) {
+      return res.status(400).json({ error: 'decision must be approved or denied.' });
+    }
+
+    const request = db.prepare('SELECT * FROM reattempt_requests WHERE id = ?').get(requestId);
+
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found.' });
+    }
+
+    db.prepare(
+      `UPDATE reattempt_requests SET status = ?, resolved_at = datetime('now') WHERE id = ?`,
+    ).run(decision, requestId);
+
+    if (decision === 'approved') {
+      db.prepare('DELETE FROM submissions WHERE exam_id = ? AND student_id = ?')
+        .run(request.exam_id, request.student_id);
+    }
+
+    res.json({ resolved: decision });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to resolve request.', details: err.message });
+  }
 });
 export default router;

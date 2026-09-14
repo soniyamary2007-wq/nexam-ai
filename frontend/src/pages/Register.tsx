@@ -60,6 +60,8 @@ function Register() {
   const [faceStatus, setFaceStatus] = useState('Camera not started.');
   const scanLoopRef = useRef<number | null>(null);
   const capturingRef = useRef(false);
+  const collectedSamplesRef = useRef<number[][]>([]);
+  const [sampleCount, setSampleCount] = useState(0);
 
   // Load states on mount
   useEffect(() => {
@@ -89,8 +91,10 @@ function Register() {
       streamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
       setCameraOn(true);
-      setFaceStatus('Camera on. Hold your face steady in the frame...');
-      scanLoopRef.current = window.setInterval(autoScanFace, 600);
+      collectedSamplesRef.current = [];
+      setSampleCount(0);
+      setFaceStatus('Camera on. Hold your face steady, centered, and well-lit...');
+      scanLoopRef.current = window.setInterval(autoScanFace, 700);
     } catch {
       setFaceStatus('Camera permission denied. Face capture is required to register as a student.');
     }
@@ -114,10 +118,26 @@ function Register() {
       return;
     }
 
+    // Good frame — collect it as one of several samples
+    collectedSamplesRef.current.push(Array.from(detection.descriptor));
+    setSampleCount(collectedSamplesRef.current.length);
+    setFaceStatus(`Good frame captured (${collectedSamplesRef.current.length}/3). Hold steady...`);
+
+    if (collectedSamplesRef.current.length < 3) {
+      return; // keep scanning for more samples
+    }
+
+    // Got 3 samples — average them into one stable descriptor
     capturingRef.current = true;
     if (scanLoopRef.current) window.clearInterval(scanLoopRef.current);
 
-    setFaceDescriptor(Array.from(detection.descriptor));
+    const samples = collectedSamplesRef.current;
+    const averaged = samples[0].map((_, i) => {
+      const sum = samples.reduce((total, sample) => total + sample[i], 0);
+      return sum / samples.length;
+    });
+
+    setFaceDescriptor(averaged);
     setFaceStatus('✓ Face captured automatically.');
     streamRef.current?.getTracks().forEach((track) => track.stop());
     setCameraOn(false);
@@ -409,6 +429,10 @@ function Register() {
                     <video ref={videoRef} autoPlay muted playsInline />
                   </div>
                   <p className="face-capture-status">{faceStatus}</p>
+                  {cameraOn && sampleCount > 0 && sampleCount < 3 && (
+                    <p className="face-capture-status">Sample {sampleCount} of 3 collected — keep holding still, slight natural movement is fine.</p>
+                  )}
+
                   {!cameraOn && (
                     <button type="button" className="exam-outline-btn" onClick={startCamera} disabled={!faceModelReady}>
                       {faceModelReady ? 'Start camera' : 'Loading face detection...'}

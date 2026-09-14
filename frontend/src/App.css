@@ -2537,3 +2537,21 @@ tbody td {
   color: #dc2626;
   font-weight: 600;
 }
+.exam-violation-banner {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  padding: 12px 20px;
+  font-weight: 600;
+  font-size: 14px;
+  text-align: center;
+}
+.reattempt-reason-box {
+  width: 100%;
+  margin: 14px 0;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+}

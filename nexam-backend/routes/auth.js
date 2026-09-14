@@ -73,11 +73,13 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Students must select a class and section.' });
     }
 
+    
     if (role === 'faculty' && (!Array.isArray(classIds) || classIds.length === 0)) {
       return res.status(400).json({ error: 'Faculty must select at least one class.' });
-          if (role === 'student' && (!Array.isArray(faceDescriptor) || faceDescriptor.length !== 128)) {
-      return res.status(400).json({ error: 'Face capture is required for students. Please complete the camera step.' });
     }
+
+    if (role === 'student' && (!Array.isArray(faceDescriptor) || faceDescriptor.length !== 128)) {
+      return res.status(400).json({ error: 'Face capture is required for students. Please complete the camera step.' });
     }
 
     const existing = db
@@ -205,5 +207,57 @@ router.get('/faculty-classes', (req, res) => {
   `).all(facultyId);
 
   res.json({ classes });
+});
+
+// ---------- Admin: list all users ----------
+
+router.get('/users', (req, res) => {
+  const { role } = req.query;
+
+  const users = role
+    ? db.prepare(`
+        SELECT u.id, u.name, u.email, u.role, u.created_at,
+               c.name AS college_name, d.name AS department_name,
+               cl.name AS class_name, cl.section AS class_section
+        FROM users u
+        LEFT JOIN colleges c ON c.id = u.college_id
+        LEFT JOIN departments d ON d.id = u.department_id
+        LEFT JOIN classes cl ON cl.id = u.class_id
+        WHERE u.role = ?
+        ORDER BY u.created_at DESC
+      `).all(role)
+    : db.prepare(`
+        SELECT u.id, u.name, u.email, u.role, u.created_at,
+               c.name AS college_name, d.name AS department_name,
+               cl.name AS class_name, cl.section AS class_section
+        FROM users u
+        LEFT JOIN colleges c ON c.id = u.college_id
+        LEFT JOIN departments d ON d.id = u.department_id
+        LEFT JOIN classes cl ON cl.id = u.class_id
+        ORDER BY u.created_at DESC
+      `).all();
+
+  res.json({ users });
+});
+
+// ---------- Admin: delete a user ----------
+
+router.delete('/users/:id', (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    db.prepare('DELETE FROM faculty_classes WHERE faculty_id = ?').run(userId);
+    db.prepare('DELETE FROM submissions WHERE student_id = ?').run(userId);
+    const result = db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete user.', details: err.message });
+  }
 });
 export default router;

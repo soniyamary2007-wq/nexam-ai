@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import bcrypt from 'bcryptjs';
 
 const db = new DatabaseSync('nexam.db');
 db.exec('PRAGMA foreign_keys = ON;');
@@ -87,6 +88,25 @@ CREATE TABLE IF NOT EXISTS submissions (
   submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(exam_id, student_id)
 );
+
+
+CREATE TABLE IF NOT EXISTS reattempt_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reason TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied')),
+  requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS exam_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  image TEXT NOT NULL,
+  captured_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 const collegeCount = db.prepare('SELECT COUNT(*) AS c FROM colleges').get().c;
@@ -139,4 +159,16 @@ if (collegeCount === 0) {
   console.log('Seeded starter colleges, departments, and classes.');
 }
 
+const adminEmail = 'admin@nexam.ai';
+const existingAdmin = db.prepare('SELECT id FROM users WHERE email = ?').get(adminEmail);
+
+if (!existingAdmin) {
+  const adminPasswordHash = bcrypt.hashSync('nexam123', 10);
+
+  db.prepare(
+    'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)',
+  ).run('Platform Admin', adminEmail, adminPasswordHash, 'admin');
+
+  console.log('Seeded default admin account: admin@nexam.ai');
+}
 export default db;

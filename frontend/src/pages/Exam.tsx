@@ -53,6 +53,8 @@ function Exam() {
   const [loadError, setLoadError] = useState('');
   const [alreadyAttempted, setAlreadyAttempted] = useState(false);
   const [priorScore, setPriorScore] = useState<{ score: number; total_marks: number } | null>(null);
+  const [reattemptReason, setReattemptReason] = useState('');
+  const [reattemptRequested, setReattemptRequested] = useState(false);
 
   const [identityConfirmed, setIdentityConfirmed] = useState(false);
   const [rulesAccepted, setRulesAccepted] = useState(false);
@@ -70,6 +72,9 @@ function Exam() {
   const [incidents, setIncidents] = useState<string[]>([]);
   const [faceModelReady, setFaceModelReady] = useState(false);
   const noFaceStreak = useRef(0);
+  const [violationCount, setViolationCount] = useState(0);
+  const [warningMessage, setWarningMessage] = useState('');
+  const checkingIdentityRef = useRef(false);
   const [submitted, setSubmitted] = useState(false);
   const [lockReason, setLockReason] = useState('');
   const [finalScore, setFinalScore] = useState(0);
@@ -145,7 +150,7 @@ function Exam() {
     return () => window.clearInterval(timer);
   }, [examStarted, submitted]);
 
-    useEffect(() => {
+        useEffect(() => {
     if (!examStarted || submitted || !examData?.proctoring_enabled) return;
 
     function handleVisibilityChange() {
@@ -154,14 +159,27 @@ function Exam() {
       }
     }
 
+    function handleWindowBlur() {
+      submitExam('Switched to another application or window. Your exam was submitted automatically.');
+    }
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
   }, [examStarted, submitted, examData]);
 
-  useEffect(() => {
+    useEffect(() => {
     if (!examStarted || submitted || !examData?.proctoring_enabled) return;
 
+    const examStartTime = Date.now();
+
     function handleFullscreenChange() {
+      const msSinceStart = Date.now() - examStartTime;
+      if (msSinceStart < 1500) return; // ignore the initial browser settling event
+
       if (!document.fullscreenElement) {
         submitExam('Exited fullscreen mode (Esc or window action). Your exam was submitted automatically.');
       }
@@ -171,32 +189,156 @@ function Exam() {
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, [examStarted, submitted, examData]);
 
-  useEffect(() => {
+    useEffect(() => {
     if (!examStarted || submitted || !examData?.proctoring_enabled || !faceModelReady) return;
 
-    const interval = window.setInterval(async () => {
-      if (!videoRef.current || videoRef.current.readyState < 2) return;
+        const interval = window.setInterval(async () => {
+      if (!videoRef.current || videoRef.current.readyState < 2 || checkingIdentityRef.current) return;
 
-      const detections = await faceapi.detectAllFaces(
-        videoRef.current,
-        new faceapi.TinyFaceDetectorOptions(),
-      );
+      checkingIdentityRef.current = true;
 
-      if (detections.length === 0) {
-        noFaceStreak.current += 1;
-        if (noFaceStreak.current === 3) {
-          addIncident('No face detected in webcam feed for several seconds.');
-        }
-      } else if (detections.length > 1) {
-        noFaceStreak.current = 0;
-        submitExam('Multiple faces detected in webcam feed. Your exam was submitted automatically.');
-      } else {
-        noFaceStreak.current = 0;
+      let detections: faceapi.FaceDetection[] = [];
+      try {
+        detections = await faceapi.detectAllFaces(
+          videoRef.current,
+          new faceapi.TinyFaceDetectorOptions(),
+        );
+      } catch (err) {
+        console.log('Detection error, skipping this cycle:', err);
+        checkingIdentityRef.current = false;
+        return;
       }
+
+            if (detections.length === 0) {
+        noFaceStreak.current += 1;
+        if (noFaceStreak.current >= 2) {
+          registerViolation('No face detected in front of the camera for several seconds.');
+          noFaceStreak.current = 0;
+        }
+        checkingIdentityRef.current = false;
+        return;
+      }
+
+      if (detections.length > 1) {
+        noFaceStreak.current = 0;
+        checkingIdentityRef.current = false;
+        submitExam('Multiple faces detected in webcam feed. Your exam was submitted automatically.');
+        return;
+      }
+
+      noFaceStreak.current = 0;
+
+      // Continuous identity check: is this still the registered candidate?
+            // Continuous identity check: is this still the registered candidate?
+      console.log('Identity check running. Has stored descriptor?', Boolean(currentUser?.faceDescriptor));
+
+            if (currentUser?.faceDescriptor && videoRef.current && videoRef.current.readyState >= 2 && !submittedRef.current) {
+        let fullDetection;
+        try {
+          fullDetection = await faceapi
+            .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+        } catch (err) {
+          console.log('Continuous check detection error, skipping:', err);
+          checkingIdentityRef.current = false;
+          return;
+        }
+
+        if (fullDetection) {
+          const storedDescriptor = new Float32Array(currentUser.faceDescriptor);
+          const distance = faceapi.euclideanDistance(storedDescriptor, fullDetection.descriptor);
+
+          console.log('Continuous check distance:', distance);
+
+          if (distance >= 0.6) {
+            registerViolation('Face does not match the registered candidate.');
+          }
+        } else {
+          console.log('No full detection obtained during continuous check.');
+        }
+      }
+
+      checkingIdentityRef.current = false;
     }, 3000);
 
     return () => window.clearInterval(interval);
-  }, [examStarted, submitted, examData, faceModelReady]);
+
+    
+  }, [examStarted, submitted, examData, faceModelReady, currentUser, violationCount]);
+    // Save a snapshot every 3 seconds for faculty review
+  useEffect(() => {
+    if (!examStarted || submitted || !examData?.proctoring_enabled || !currentUser) return;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 160;
+    canvas.height = 120;
+    const ctx = canvas.getContext('2d');
+
+    const snapInterval = window.setInterval(() => {
+      if (!videoRef.current || !ctx || videoRef.current.readyState < 2) return;
+
+      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+      const image = canvas.toDataURL('image/jpeg', 0.5);
+
+      fetch(`${API_BASE}/exams/snapshot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ examId: Number(examId), studentId: currentUser.id, image }),
+      }).catch(() => {});
+    }, 3000);
+
+    return () => window.clearInterval(snapInterval);
+  }, [examStarted, submitted, examData, currentUser, examId]);
+
+    function registerViolation(reason: string) {
+    playAlertSound();
+
+    setViolationCount((current) => {
+      const updated = current + 1;
+
+      if (updated >= 2) {
+        addIncident(`Violation 2/2: ${reason} — exam terminated.`);
+        submitExam(`Exam terminated: ${reason} (2nd violation — automatic disqualification).`);
+      } else {
+        addIncident(`Violation ${updated}/2: ${reason}`);
+        setWarningMessage(`⚠ Warning ${updated}/2: ${reason} If this happens again, your exam will be automatically submitted.`);
+        window.setTimeout(() => setWarningMessage(''), 6000);
+      }
+
+      return updated;
+    });
+  }
+    function addIncident(message: string) {
+    setIncidents((current) => [...current, `${new Date().toLocaleTimeString()} — ${message}`]);
+  }
+    async function requestReattempt() {
+    if (!currentUser || !examId) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/exams/reattempt-request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ examId: Number(examId), studentId: currentUser.id, reason: reattemptReason.trim() }),
+      });
+
+      if (response.ok) {
+        setReattemptRequested(true);
+      } else {
+        const data = await response.json();
+        window.alert(data.error || 'Failed to send request.');
+      }
+    } catch {
+      window.alert('Could not connect to the server.');
+    }
+  }
+  // Re-attach the camera stream whenever the video element remounts
+// (this happens when switching from check-in screen to exam screen)
+useEffect(() => {
+  if (videoRef.current && streamRef.current) {
+    videoRef.current.srcObject = streamRef.current;
+  }
+}, [examStarted]);
 
   async function enableCamera() {
     try {
@@ -211,20 +353,43 @@ function Exam() {
     }
   }
 
-  function addIncident(message: string) {
-    setIncidents((current) => [...current, `${new Date().toLocaleTimeString()} — ${message}`]);
+    function playAlertSound() {
+    try {
+      const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(880, context.currentTime);
+      gain.gain.setValueAtTime(0.3, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.4);
+      oscillator.start();
+      oscillator.stop(context.currentTime + 0.4);
+    } catch {
+      // Audio playback not supported — fail silently, warning banner still shows
+    }
   }
-    async function verifyFace() {
-    if (!videoRef.current || !currentUser?.faceDescriptor) return;
+        async function verifyFace() {
+    console.log('verifyFace called. videoRef?', Boolean(videoRef.current), '| has stored descriptor?', Boolean(currentUser?.faceDescriptor));
+
+    if (!videoRef.current || !currentUser?.faceDescriptor) {
+      console.log('verifyFace exiting early — missing video or stored descriptor.');
+      return;
+    }
 
     setVerifyingFace(true);
     setFaceMismatch(false);
     setCameraMessage('Verifying your identity...');
 
+    console.log('Running face detection...');
+
     const detection = await faceapi
       .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
       .withFaceLandmarks()
       .withFaceDescriptor();
+
+    console.log('Detection result:', detection ? 'face found' : 'no face found');
 
     setVerifyingFace(false);
 
@@ -233,11 +398,13 @@ function Exam() {
       return;
     }
 
-    const storedDescriptor = new Float32Array(currentUser.faceDescriptor);
+        const storedDescriptor = new Float32Array(currentUser.faceDescriptor);
     const distance = faceapi.euclideanDistance(storedDescriptor, detection.descriptor);
 
+    console.log('Face match distance:', distance); // TEMPORARY — check browser console
+
     // Lower distance = more similar. Below ~0.5 is a confident match.
-    if (distance < 0.5) {
+    if (distance < 0.6) {
       setIdentityConfirmed(true);
       setFaceMismatch(false);
       setCameraMessage('✓ Identity verified. Face matches your registered profile.');
@@ -248,13 +415,26 @@ function Exam() {
     }
   }
 
-  function startExam() {
+       async function startExam() {
     if (!identityConfirmed || !rulesAccepted) return;
-    setExamStarted(true);
 
     if (examData?.proctoring_enabled) {
-      document.documentElement.requestFullscreen?.().catch(() => {});
+      try {
+        await document.documentElement.requestFullscreen();
+      } catch {
+        window.alert('Fullscreen mode is required for this proctored exam. Please allow fullscreen and try again.');
+        return;
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+
+      if (!document.fullscreenElement) {
+        window.alert('Your browser blocked fullscreen mode. Please allow fullscreen access and click "Proceed to secure exam" again.');
+        return;
+      }
     }
+
+    setExamStarted(true);
   }
 
   function selectAnswer(questionIndex: number, optionIndex: number) {
@@ -351,7 +531,27 @@ function Exam() {
           <span className="exam-portal-code">NOTICE</span>
           <h2>Reattempt not allowed</h2>
           <p>You have already submitted this examination.{priorScore && ` Your score: ${priorScore.score}/${priorScore.total_marks}.`}</p>
-          <button className="exam-primary-btn" onClick={() => navigate('/dashboard')}>Back to dashboard</button>
+
+          {!reattemptRequested ? (
+            <>
+              <textarea
+                className="reattempt-reason-box"
+                placeholder="If this was a mistake (e.g. accidental submission, technical issue), explain briefly..."
+                value={reattemptReason}
+                onChange={(e) => setReattemptReason(e.target.value)}
+                rows={3}
+              />
+              <button className="exam-outline-btn" onClick={requestReattempt}>
+                Request a reattempt
+              </button>
+            </>
+          ) : (
+            <p className="face-capture-status success">✓ Your reattempt request has been sent to your faculty for review.</p>
+          )}
+
+          <button className="exam-primary-btn" onClick={() => navigate('/dashboard')} style={{ marginTop: 12 }}>
+            Back to dashboard
+          </button>
         </section>
       </main>
     );
@@ -452,7 +652,7 @@ function Exam() {
 
   return (
     <main className="exam-workspace-formal">
-      <header className="exam-formal-header">
+            <header className="exam-formal-header">
         <div className="exam-formal-header-left">
           <span className="exam-portal-code">SECURE ASSESSMENT IN PROGRESS</span>
           <h2>{examData.title}</h2>
@@ -466,6 +666,10 @@ function Exam() {
           <div><strong>{currentUser?.name}</strong><small>● Monitoring active</small></div>
         </div>
       </header>
+
+      {warningMessage && (
+        <div className="exam-violation-banner">{warningMessage}</div>
+      )}
 
       <section className="exam-formal-layout">
         <aside className="exam-formal-nav">
