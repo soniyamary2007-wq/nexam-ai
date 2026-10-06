@@ -10,6 +10,7 @@ import FacultyDashboard from "./pages/FacultyDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
 import CreateExam from "./pages/CreateExam";
 import Home from "./pages/Home";
+import ExamRecordings from './pages/ExamRecordings';
 
 import "./App.css";
 
@@ -27,6 +28,7 @@ function App() {
       <Route path="*" element={<Navigate to="/" replace />} />
       <Route path="/student-report" element={<StudentReport />} />
       <Route path="/faculty/exam/:examId/snapshots" element={<SnapshotReview />} />
+      <Route path="/exam-recordings/:examId" element={<ExamRecordings />} />
     </Routes>
   );
 }

@@ -2,6 +2,9 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import authRoutes from './routes/auth.js';
 import examRoutes from './routes/exams.js';
@@ -9,9 +12,14 @@ import './db.js'; // ensures DB + tables + seed data exist on startup
 
 dotenv.config();
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const recordingsDir = path.join(__dirname, 'recordings');
+if (!fs.existsSync(recordingsDir)) fs.mkdirSync(recordingsDir);
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+app.use('/recordings', express.static(recordingsDir));
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 

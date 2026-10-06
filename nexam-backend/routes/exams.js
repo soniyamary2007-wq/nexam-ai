@@ -1,3 +1,10 @@
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const recordingsDir = path.join(__dirname, '..', 'recordings');
+if (!fs.existsSync(recordingsDir)) fs.mkdirSync(recordingsDir);
 import express from 'express';
 import db from '../db.js';
 
@@ -332,6 +339,95 @@ router.get('/:id/snapshot-students', (req, res) => {
   `).all(req.params.id);
 
   res.json({ students });
+});
+router.post(
+  '/recording',
+  express.raw({ type: 'video/webm', limit: '300mb' }),
+  (req, res) => {
+    try {
+      const { examId, studentId } = req.query;
+
+      if (!examId || !studentId) {
+        return res.status(400).json({ error: 'examId and studentId are required.' });
+      }
+
+      const fileName = `${examId}_${studentId}.webm`;
+      fs.writeFileSync(path.join(recordingsDir, fileName), req.body);
+
+      res.status(201).json({ saved: true, fileName });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Failed to save recording.', details: err.message });
+    }
+  },
+);
+
+router.get('/:id/recording', (req, res) => {
+  const { studentId } = req.query;
+  const examId = req.params.id;
+
+  if (!studentId) {
+    return res.status(400).json({ error: 'studentId is required.' });
+  }
+
+  const fileName = `${examId}_${studentId}.webm`;
+  const filePath = path.join(recordingsDir, fileName);
+
+  if (!fs.existsSync(filePath)) {
+    return res.json({ exists: false });
+  }
+
+  res.json({ exists: true, url: `/recordings/${fileName}` });
+});
+
+router.get('/:id/recording-students', (req, res) => {
+  const examId = req.params.id;
+  const allFiles = fs.readdirSync(recordingsDir);
+
+  const studentIds = allFiles
+    .filter((file) => file.startsWith(`${examId}_`))
+    .map((file) => Number(file.replace(`${examId}_`, '').replace('.webm', '')));
+
+  const placeholders = studentIds.map(() => '?').join(',');
+  const students = studentIds.length
+    ? db.prepare(`SELECT id, name FROM users WHERE id IN (${placeholders})`).all(...studentIds)
+    : [];
+
+  res.json({ students });
+});
+// ---------- Flags (violations that lasted over 6 seconds, or speech warnings) ----------
+
+router.post('/flags', (req, res) => {
+  try {
+    const { examId, studentId, type, detail, offsetSeconds } = req.body;
+
+    if (!examId || !studentId || !type) {
+      return res.status(400).json({ error: 'examId, studentId, and type are required.' });
+    }
+
+    db.prepare(
+      'INSERT INTO exam_flags (exam_id, student_id, type, detail, offset_seconds) VALUES (?, ?, ?, ?, ?)',
+    ).run(examId, studentId, type, detail || null, offsetSeconds || 0);
+
+    res.status(201).json({ saved: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to save flag.', details: err.message });
+  }
+});
+
+router.get('/:id/flags', (req, res) => {
+  const { studentId } = req.query;
+
+  if (!studentId) {
+    return res.status(400).json({ error: 'studentId is required.' });
+  }
+
+  const flags = db.prepare(
+    'SELECT * FROM exam_flags WHERE exam_id = ? AND student_id = ? ORDER BY offset_seconds ASC',
+  ).all(req.params.id, studentId);
+
+  res.json({ flags });
 });
 router.get('/:id', (req, res) => {
 

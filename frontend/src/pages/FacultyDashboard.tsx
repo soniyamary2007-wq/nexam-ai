@@ -202,6 +202,11 @@ function FacultyDashboard() {
                   <span className={`faculty-exam-pill ${exam.proctoring_enabled ? 'proctored' : 'unproctored'}`}>
                     {exam.proctoring_enabled ? '◉ AI proctored' : '○ Unproctored'}
                   </span>
+                  {Boolean(exam.proctoring_enabled) && (
+                    <Link to={`/exam-recordings/${exam.id}`} className="exam-outline-btn" style={{ marginTop: 8 }}>
+                      View recordings →
+                    </Link>
+                  )}
                 </div>
               </article>
             ))}

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import * as faceapi from 'face-api.js';
+import { useSpeechDetection, extractKeywords } from '../hooks/useSpeechDetection';
 
 const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
 
@@ -42,6 +43,8 @@ function Exam() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const submittedRef = useRef(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<BlobPart[]>([]);
 
   const [currentUser] = useState<User | null>(() =>
     JSON.parse(localStorage.getItem('nexam_current_user') || 'null'),
@@ -68,6 +71,15 @@ function Exam() {
   const [markedForReview, setMarkedForReview] = useState<Set<number>>(new Set());
   const [activeQuestion, setActiveQuestion] = useState(0);
   const [remainingSeconds, setRemainingSeconds] = useState(0);
+
+  const recordingStartRef = useRef(0);
+  const warningCountRef = useRef(0);
+  const episodeRef = useRef<Record<string, { since: number | null; flagged: boolean }>>({});
+  const answersRef = useRef(answers);
+  answersRef.current = answers;
+
+  const MAX_WARNINGS = 5;
+  const GRACE_MS = 6000;
 
   const [incidents, setIncidents] = useState<string[]>([]);
   const [faceModelReady, setFaceModelReady] = useState(false);
@@ -189,83 +201,55 @@ function Exam() {
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, [examStarted, submitted, examData]);
 
-    useEffect(() => {
+      useEffect(() => {
     if (!examStarted || submitted || !examData?.proctoring_enabled || !faceModelReady) return;
 
-        const interval = window.setInterval(async () => {
+    const interval = window.setInterval(async () => {
       if (!videoRef.current || videoRef.current.readyState < 2 || checkingIdentityRef.current) return;
 
       checkingIdentityRef.current = true;
 
-      let detections: faceapi.FaceDetection[] = [];
       try {
-        detections = await faceapi.detectAllFaces(
-          videoRef.current,
-          new faceapi.TinyFaceDetectorOptions(),
-        );
-      } catch (err) {
-        console.log('Detection error, skipping this cycle:', err);
-        checkingIdentityRef.current = false;
-        return;
-      }
-
-            if (detections.length === 0) {
-        noFaceStreak.current += 1;
-        if (noFaceStreak.current >= 2) {
-          registerViolation('No face detected in front of the camera for several seconds.');
-          noFaceStreak.current = 0;
-        }
-        checkingIdentityRef.current = false;
-        return;
-      }
-
-      if (detections.length > 1) {
-        noFaceStreak.current = 0;
-        checkingIdentityRef.current = false;
-        submitExam('Multiple faces detected in webcam feed. Your exam was submitted automatically.');
-        return;
-      }
-
-      noFaceStreak.current = 0;
-
-      // Continuous identity check: is this still the registered candidate?
-            // Continuous identity check: is this still the registered candidate?
-      console.log('Identity check running. Has stored descriptor?', Boolean(currentUser?.faceDescriptor));
-
-            if (currentUser?.faceDescriptor && videoRef.current && videoRef.current.readyState >= 2 && !submittedRef.current) {
-        let fullDetection;
+        let detections: faceapi.FaceDetection[] = [];
         try {
-          fullDetection = await faceapi
-            .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
-            .withFaceLandmarks()
-            .withFaceDescriptor();
+          detections = await faceapi.detectAllFaces(
+            videoRef.current,
+            new faceapi.TinyFaceDetectorOptions(),
+          );
         } catch (err) {
-          console.log('Continuous check detection error, skipping:', err);
-          checkingIdentityRef.current = false;
+          console.log('Detection error, skipping this cycle:', err);
           return;
         }
 
-        if (fullDetection) {
-          const storedDescriptor = new Float32Array(currentUser.faceDescriptor);
-          const distance = faceapi.euclideanDistance(storedDescriptor, fullDetection.descriptor);
+        trackViolation('noFace', detections.length === 0, 'no_face', 'No face detected in front of the camera.');
+        trackViolation('multiFace', detections.length > 1, 'multiple_faces', 'More than one face detected in the camera.');
 
-          console.log('Continuous check distance:', distance);
-
-          if (distance >= 0.6) {
-            registerViolation('Face does not match the registered candidate.');
-          }
-        } else {
-          console.log('No full detection obtained during continuous check.');
+        if (detections.length !== 1) {
+          trackViolation('mismatch', false, 'face_mismatch', '');
+          return;
         }
-      }
 
-      checkingIdentityRef.current = false;
+        if (currentUser?.faceDescriptor && !submittedRef.current) {
+          const fullDetection = await faceapi
+            .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+
+          if (fullDetection) {
+            const storedDescriptor = new Float32Array(currentUser.faceDescriptor);
+            const distance = faceapi.euclideanDistance(storedDescriptor, fullDetection.descriptor);
+            trackViolation('mismatch', distance >= 0.6, 'face_mismatch', 'Face does not match the registered candidate.');
+          }
+        }
+      } catch (err) {
+        console.log('Face check error, skipping:', err);
+      } finally {
+        checkingIdentityRef.current = false;
+      }
     }, 3000);
 
     return () => window.clearInterval(interval);
-
-    
-  }, [examStarted, submitted, examData, faceModelReady, currentUser, violationCount]);
+  }, [examStarted, submitted, examData, faceModelReady, currentUser]);
     // Save a snapshot every 3 seconds for faculty review
   useEffect(() => {
     if (!examStarted || submitted || !examData?.proctoring_enabled || !currentUser) return;
@@ -291,24 +275,68 @@ function Exam() {
     return () => window.clearInterval(snapInterval);
   }, [examStarted, submitted, examData, currentUser, examId]);
 
-    function registerViolation(reason: string) {
-    playAlertSound();
+    
+      // A violation only becomes a warning after it lasts 6 seconds in a row
+  function trackViolation(key: string, active: boolean, type: string, detail: string) {
+    const ep = episodeRef.current[key] ?? (episodeRef.current[key] = { since: null, flagged: false });
 
-    setViolationCount((current) => {
-      const updated = current + 1;
+    if (!active) {
+      ep.since = null;
+      ep.flagged = false;
+      return;
+    }
 
-      if (updated >= 2) {
-        addIncident(`Violation 2/2: ${reason} — exam terminated.`);
-        submitExam(`Exam terminated: ${reason} (2nd violation — automatic disqualification).`);
-      } else {
-        addIncident(`Violation ${updated}/2: ${reason}`);
-        setWarningMessage(`⚠ Warning ${updated}/2: ${reason} If this happens again, your exam will be automatically submitted.`);
-        window.setTimeout(() => setWarningMessage(''), 6000);
-      }
+    if (ep.since === null) ep.since = Date.now();
 
-      return updated;
-    });
+    if (!ep.flagged && Date.now() - ep.since >= GRACE_MS) {
+      ep.flagged = true; // one flag per continuous episode
+      addWarning(type, detail);
+    }
   }
+
+  function logFlag(type: string, detail: string) {
+    if (!currentUser || !examId) return;
+    const offsetSeconds = Math.max(0, Math.round((Date.now() - recordingStartRef.current) / 1000));
+
+    fetch(`${API_BASE}/exams/flags`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ examId: Number(examId), studentId: currentUser.id, type, detail, offsetSeconds }),
+    }).catch(() => {});
+  }
+
+  function addWarning(type: string, detail: string) {
+    if (submittedRef.current) return;
+
+    playAlertSound();
+    warningCountRef.current += 1;
+    const count = warningCountRef.current;
+
+    logFlag(type, detail);
+
+    if (count >= MAX_WARNINGS) {
+      addIncident(`Warning ${count}/${MAX_WARNINGS}: ${detail} — exam terminated.`);
+      submitExam(`Exam terminated: ${detail} (warning limit of ${MAX_WARNINGS} reached).`);
+    } else {
+      addIncident(`Warning ${count}/${MAX_WARNINGS}: ${detail}`);
+      setWarningMessage(`⚠ Warning ${count}/${MAX_WARNINGS}: ${detail} After ${MAX_WARNINGS} warnings your exam will be submitted automatically.`);
+      window.setTimeout(() => setWarningMessage(''), 6000);
+    }
+  }
+
+  // Speech detection: keywords come from the current question and its options
+  const questionKeywords = useMemo(() => {
+    const q = questions[activeQuestion];
+    if (!q) return new Set<string>();
+    return extractKeywords(`${q.question} ${q.option_a} ${q.option_b} ${q.option_c} ${q.option_d}`);
+  }, [questions, activeQuestion]);
+
+  useSpeechDetection({
+    enabled: examStarted && !submitted && Boolean(examData?.proctoring_enabled),
+    keywords: questionKeywords,
+    questionKey: activeQuestion,
+    onWarning: (snippet) => addWarning('speech', `Suspicious speech detected (words heard: ${snippet}).`),
+  });
     function addIncident(message: string) {
     setIncidents((current) => [...current, `${new Date().toLocaleTimeString()} — ${message}`]);
   }
@@ -414,8 +442,7 @@ useEffect(() => {
       setCameraMessage('⚠ Face does not match the registered candidate. You cannot proceed.');
     }
   }
-
-       async function startExam() {
+      async function startExam() {
     if (!identityConfirmed || !rulesAccepted) return;
 
     if (examData?.proctoring_enabled) {
@@ -434,8 +461,26 @@ useEffect(() => {
       }
     }
 
+    if (streamRef.current) {
+      recordedChunksRef.current = [];
+      const recorder = new MediaRecorder(streamRef.current, {
+        mimeType: 'video/webm;codecs=vp8',
+        videoBitsPerSecond: 500000,
+      });
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+
+      recorder.start(1000); 
+      recordingStartRef.current = Date.now();// collect data every second, in case of abrupt crash
+      mediaRecorderRef.current = recorder;
+    }
+
     setExamStarted(true);
   }
+
+   
 
   function selectAnswer(questionIndex: number, optionIndex: number) {
     setAnswers((current) => ({ ...current, [questionIndex]: optionIndex }));
@@ -456,6 +501,35 @@ useEffect(() => {
       return updated;
     });
   }
+    async function stopAndUploadRecording(): Promise<void> {
+    return new Promise((resolve) => {
+      const recorder = mediaRecorderRef.current;
+
+      if (!recorder || recorder.state === 'inactive') {
+        resolve();
+        return;
+      }
+
+      recorder.onstop = async () => {
+        try {
+          const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+
+          if (blob.size > 0 && currentUser && examId) {
+            await fetch(`${API_BASE}/exams/recording?examId=${examId}&studentId=${currentUser.id}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'video/webm' },
+              body: blob,
+            });
+          }
+        } catch {
+          // Upload failure shouldn't block submission
+        }
+        resolve();
+      };
+
+      recorder.stop();
+    });
+  }
 
   async function submitExam(reason = '') {
     if (!currentUser || submittedRef.current) return;
@@ -464,6 +538,8 @@ useEffect(() => {
     if (reason) addIncident(reason);
 
     const answersArray = questions.map((_, index) => answers[index] ?? -1);
+
+    await stopAndUploadRecording();
 
     try {
       const response = await fetch(`${API_BASE}/exams/${examId}/submit`, {
@@ -493,6 +569,8 @@ useEffect(() => {
       setSubmitted(true);
     }
   }
+
+  
 
   function formatTime(seconds: number) {
     const hours = Math.floor(seconds / 3600);
