@@ -35,6 +35,7 @@ function Register() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [role, setRole] = useState<Role>('student');
+  const [rollNo, setRollNo] = useState('');
 
   const [states, setStates] = useState<string[]>([]);
   const [selectedState, setSelectedState] = useState('');
@@ -224,6 +225,10 @@ function Register() {
       setError('Please select your class and section.');
       return;
     }
+    if (role === 'student' && !rollNo.trim()) {
+      setError('Please enter your roll number.');
+      return;
+    }
 
     if (role === 'faculty' && selectedClassIds.length === 0) {
       setError('Please select at least one class you teach.');
@@ -250,6 +255,7 @@ function Register() {
           classId: role === 'student' ? Number(selectedClassId) : undefined,
           classIds: role === 'faculty' ? selectedClassIds : undefined,
           faceDescriptor: role === 'student' ? faceDescriptor : undefined,
+          rollNo: role === 'student' ? rollNo.trim() : undefined,
         }),
       });
 
@@ -401,7 +407,17 @@ function Register() {
               ))}
             </select>
           </label>
-
+                    {role === 'student' && (
+            <label>
+              Roll number
+              <input
+                type="text"
+                value={rollNo}
+                onChange={(event) => setRollNo(event.target.value)}
+                placeholder="e.g. 21CS001"
+              />
+            </label>
+          )}
           {role === 'student' && (
             <label>
               Class & section

@@ -57,7 +57,8 @@ router.get('/classes', (req, res) => {
 
 router.post('/signup', async (req, res) => {
   try {
-        const { name, email, password, role, collegeId, departmentId, classId, classIds, faceDescriptor } = req.body;
+    const { name, email, password, role, collegeId, departmentId, classId, classIds, faceDescriptor, rollNo } = req.body;
+      
 
     if (!name || !email || !password || !role || !collegeId || !departmentId) {
       return res.status(400).json({
@@ -71,6 +72,9 @@ router.post('/signup', async (req, res) => {
 
     if (role === 'student' && !classId) {
       return res.status(400).json({ error: 'Students must select a class and section.' });
+    }
+        if (role === 'student' && !rollNo?.toString().trim()) {
+      return res.status(400).json({ error: 'Students must enter a roll number.' });
     }
 
     
@@ -92,8 +96,8 @@ router.post('/signup', async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    const insertUser = db.prepare(
-      'INSERT INTO users (name, email, password, role, college_id, department_id, class_id, face_descriptor) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        const insertUser = db.prepare(
+      'INSERT INTO users (name, email, password, role, college_id, department_id, class_id, face_descriptor, roll_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     );
 
     const result = insertUser.run(
@@ -105,8 +109,8 @@ router.post('/signup', async (req, res) => {
       departmentId,
       role === 'student' ? classId : null,
       role === 'student' ? JSON.stringify(faceDescriptor) : null,
+      role === 'student' ? rollNo.toString().trim() : null,
     );
-
     const userId = result.lastInsertRowid;
 
     if (role === 'faculty') {

@@ -118,6 +118,12 @@ CREATE TABLE IF NOT EXISTS exam_flags (
 );
 `);
 
+// Add roll number column to users (safe to run many times)
+try {
+  db.exec('ALTER TABLE users ADD COLUMN roll_no TEXT');
+} catch {
+  // column already exists, nothing to do
+} 
 const collegeCount = db.prepare('SELECT COUNT(*) AS c FROM colleges').get().c;
 
 if (collegeCount === 0) {
