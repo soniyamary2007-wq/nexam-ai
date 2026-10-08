@@ -7,6 +7,7 @@ const recordingsDir = path.join(__dirname, '..', 'recordings');
 if (!fs.existsSync(recordingsDir)) fs.mkdirSync(recordingsDir);
 import express from 'express';
 import db from '../db.js';
+import { sendPostedReminder } from '../reminders.js';
 
 
 
@@ -123,6 +124,7 @@ router.post('/', (req, res) => {
     }
 
     res.status(201).json({ examId });
+        sendPostedReminder(Number(examId)).catch((err) => console.log('Posted reminder error:', err.message));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to create exam.', details: err.message });
@@ -430,6 +432,7 @@ router.get('/:id/flags', (req, res) => {
   res.json({ flags });
 });
 router.get('/:id', (req, res) => {
+  
 
   const exam = db.prepare('SELECT * FROM exams WHERE id = ?').get(req.params.id);
 
@@ -705,5 +708,30 @@ router.post('/reattempt-requests/:id/resolve', (req, res) => {
     console.error(err);
     res.status(500).json({ error: 'Failed to resolve request.', details: err.message });
   }
+});
+
+// ---------- Roster ----------
+
+router.get('/:id/roster', (req, res) => {
+  const examId = req.params.id;
+
+  const rows = db.prepare(`
+    SELECT a.roll_no, a.name, a.email,
+           u.id AS student_id,
+           s.score, s.total_marks, s.auto_submitted, s.submitted_at,
+           (SELECT COUNT(*) FROM exam_flags f WHERE f.exam_id = ? AND f.student_id = u.id) AS flag_count
+    FROM approved_students a
+    LEFT JOIN users u ON u.email = a.email
+    LEFT JOIN submissions s ON s.student_id = u.id AND s.exam_id = ?
+    WHERE a.class_id IN (SELECT class_id FROM exam_classes WHERE exam_id = ?)
+    ORDER BY a.roll_no
+  `).all(examId, examId, examId);
+
+  const roster = rows.map((r) => ({
+    ...r,
+    status: !r.submitted_at ? 'not_attempted' : r.auto_submitted ? 'terminated' : 'completed',
+  }));
+
+  res.json({ roster });
 });
 export default router;

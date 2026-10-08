@@ -36,6 +36,11 @@ function Register() {
   const [showPassword, setShowPassword] = useState(false);
   const [role, setRole] = useState<Role>('student');
   const [rollNo, setRollNo] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
+  const [code, setCode] = useState('');
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [verifiedInfo, setVerifiedInfo] = useState<{ name: string; rollNo: string; classId: number; departmentId: number; collegeId: number } | null>(null);
+  const [codeMessage, setCodeMessage] = useState('');
 
   const [states, setStates] = useState<string[]>([]);
   const [selectedState, setSelectedState] = useState('');
@@ -196,10 +201,60 @@ function Register() {
         : [...current, classId],
     );
   }
+  async function sendCode() {
+  setCodeMessage('');
+  if (!email.trim()) {
+    setCodeMessage('Enter your college email first.');
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/send-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setCodeMessage(data.error || 'Could not send the code.');
+      return;
+    }
+    setCodeSent(true);
+    setCodeMessage('Code sent. Check your college email inbox (and Spam).');
+  } catch {
+    setCodeMessage('Could not connect to the server.');
+  }
+}
+
+async function verifyCode() {
+  setCodeMessage('');
+  try {
+    const res = await fetch(`${API_BASE}/verify-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim(), code: code.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setCodeMessage(data.error || 'Wrong code.');
+      return;
+    }
+    setEmailVerified(true);
+    setVerifiedInfo(data.student);
+    setName(data.student.name);
+    setRollNo(data.student.rollNo);
+    setCodeMessage('✓ Email verified.');
+  } catch {
+    setCodeMessage('Could not connect to the server.');
+  }
+}
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
+    if (role === 'student' && !emailVerified) {
+  setError('Please verify your college email first.');
+  return;
+}
 
     if (!name.trim() || !email.trim() || !password) {
       setError('Please fill in your name, email, and password.');
@@ -216,12 +271,12 @@ function Register() {
       return;
     }
 
-    if (!selectedState || !selectedCollege || !selectedDepartment) {
+    if (role === 'faculty' && (!selectedState || !selectedCollege || !selectedDepartment)) {
       setError('Please select your state, college, and department.');
       return;
     }
 
-    if (role === 'student' && !selectedClassId) {
+    if (false) {
       setError('Please select your class and section.');
       return;
     }
@@ -250,9 +305,9 @@ function Register() {
           email: email.trim(),
           password,
           role,
-          collegeId: Number(selectedCollege),
-          departmentId: Number(selectedDepartment),
-          classId: role === 'student' ? Number(selectedClassId) : undefined,
+          collegeId: role === 'student' && verifiedInfo ? verifiedInfo.collegeId : Number(selectedCollege),
+departmentId: role === 'student' && verifiedInfo ? verifiedInfo.departmentId : Number(selectedDepartment),
+classId: role === 'student' && verifiedInfo ? verifiedInfo.classId : undefined,
           classIds: role === 'faculty' ? selectedClassIds : undefined,
           faceDescriptor: role === 'student' ? faceDescriptor : undefined,
           rollNo: role === 'student' ? rollNo.trim() : undefined,
@@ -328,6 +383,32 @@ function Register() {
               autoComplete="email"
             />
           </label>
+          {role === 'student' && (
+  <div className="face-capture-section">
+    {!emailVerified ? (
+      <>
+        <button type="button" className="exam-outline-btn" onClick={sendCode}>
+          {codeSent ? 'Resend code' : 'Send verification code'}
+        </button>
+        {codeSent && (
+          <>
+            <input
+              type="text"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="Enter 6-digit code"
+              maxLength={6}
+            />
+            <button type="button" className="exam-primary-btn" onClick={verifyCode}>Verify code</button>
+          </>
+        )}
+      </>
+    ) : (
+      <p className="face-capture-status success">✓ Email verified. Name and roll number filled from your college list.</p>
+    )}
+    {codeMessage && <p className="face-capture-status">{codeMessage}</p>}
+  </div>
+)}
 
           <label>
             Password
@@ -407,7 +488,7 @@ function Register() {
               ))}
             </select>
           </label>
-                    {role === 'student' && (
+          {role === 'student' && (
             <label>
               Roll number
               <input

@@ -11,6 +11,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import CreateExam from "./pages/CreateExam";
 import Home from "./pages/Home";
 import ExamRecordings from './pages/ExamRecordings';
+import StudentList from './pages/StudentList';
 
 import "./App.css";
 
@@ -29,6 +30,7 @@ function App() {
       <Route path="/student-report" element={<StudentReport />} />
       <Route path="/faculty/exam/:examId/snapshots" element={<SnapshotReview />} />
       <Route path="/exam-recordings/:examId" element={<ExamRecordings />} />
+      <Route path="/student-list" element={<StudentList />} />
     </Routes>
   );
 }

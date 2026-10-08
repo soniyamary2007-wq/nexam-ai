@@ -1,6 +1,8 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db.js';
+import crypto from 'crypto';
+import { sendMail } from '../mailer.js';
 
 const router = express.Router();
 
@@ -69,13 +71,31 @@ router.post('/signup', async (req, res) => {
     if (!['student', 'faculty'].includes(role)) {
       return res.status(400).json({ error: 'Role must be student or faculty.' });
     }
+        let listed = null;
 
-    if (role === 'student' && !classId) {
-      return res.status(400).json({ error: 'Students must select a class and section.' });
+    if (role === 'student') {
+      const cleanEmail = String(email).trim().toLowerCase();
+
+      const codeRow = db.prepare('SELECT verified FROM email_codes WHERE email = ?').get(cleanEmail);
+      if (!codeRow || !codeRow.verified) {
+        return res.status(403).json({ error: 'Please verify your college email first.' });
+      }
+
+      listed = db.prepare(`
+        SELECT a.name, a.roll_no, a.class_id, c.department_id, d.college_id
+        FROM approved_students a
+        JOIN classes c ON c.id = a.class_id
+        JOIN departments d ON d.id = c.department_id
+        WHERE a.email = ?
+      `).get(cleanEmail);
+
+      if (!listed) {
+        return res.status(403).json({ error: 'Your email is not in the student list.' });
+      }
     }
-        if (role === 'student' && !rollNo?.toString().trim()) {
-      return res.status(400).json({ error: 'Students must enter a roll number.' });
-    }
+
+
+      
 
     
     if (role === 'faculty' && (!Array.isArray(classIds) || classIds.length === 0)) {
@@ -101,17 +121,18 @@ router.post('/signup', async (req, res) => {
     );
 
     const result = insertUser.run(
-      name.trim(),
+       role === 'student' ? listed.name : name.trim(),
       email.trim().toLowerCase(),
       passwordHash,
       role,
-      collegeId,
-      departmentId,
-      role === 'student' ? classId : null,
+      role === 'student' ? listed.college_id : collegeId,
+      role === 'student' ? listed.department_id : departmentId,
+      role === 'student' ? listed.class_id : null,
       role === 'student' ? JSON.stringify(faceDescriptor) : null,
-      role === 'student' ? rollNo.toString().trim() : null,
+      role === 'student' ? listed.roll_no : null,
     );
     const userId = result.lastInsertRowid;
+        db.prepare('DELETE FROM email_codes WHERE email = ?').run(email.trim().toLowerCase());
 
     if (role === 'faculty') {
       const insertFacultyClass = db.prepare(
@@ -262,6 +283,79 @@ router.delete('/users/:id', (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to delete user.', details: err.message });
+  }
+});
+// ---------- Email code for student registration ----------
+
+router.post('/send-code', async (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+
+    if (!email) {
+      return res.status(400).json({ error: 'Enter your college email.' });
+    }
+
+    const approved = db.prepare('SELECT id FROM approved_students WHERE email = ?').get(email);
+    if (!approved) {
+      return res.status(403).json({ error: 'Your email is not in the student list. Contact your faculty.' });
+    }
+
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (existing) {
+      return res.status(409).json({ error: 'This email is already registered. Please log in.' });
+    }
+
+    const code = String(crypto.randomInt(100000, 1000000));
+
+    db.prepare(
+      'INSERT OR REPLACE INTO email_codes (email, code, expires_at, attempts, verified) VALUES (?, ?, ?, 0, 0)',
+    ).run(email, code, Date.now() + 10 * 60 * 1000);
+
+    await sendMail(email, 'Your NEXAM verification code', `Your NEXAM code is ${code}. It expires in 10 minutes.`);
+
+    res.json({ sent: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not send the code.', details: err.message });
+  }
+});
+
+router.post('/verify-code', (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const code = String(req.body.code || '').trim();
+
+    const row = db.prepare('SELECT * FROM email_codes WHERE email = ?').get(email);
+
+    if (!row) {
+      return res.status(400).json({ error: 'Please send a code first.' });
+    }
+    if (Date.now() > row.expires_at) {
+      return res.status(400).json({ error: 'The code has expired. Send a new one.' });
+    }
+    if (row.attempts >= 5) {
+      return res.status(429).json({ error: 'Too many wrong tries. Send a new code.' });
+    }
+    if (row.code !== code) {
+      db.prepare('UPDATE email_codes SET attempts = attempts + 1 WHERE email = ?').run(email);
+      return res.status(400).json({ error: 'Wrong code.' });
+    }
+
+    db.prepare('UPDATE email_codes SET verified = 1 WHERE email = ?').run(email);
+
+    const student = db.prepare(`
+      SELECT a.name, a.roll_no AS rollNo, a.class_id AS classId,
+             c.department_id AS departmentId, d.college_id AS collegeId
+      FROM approved_students a
+      JOIN classes c ON c.id = a.class_id
+      JOIN departments d ON d.id = c.department_id
+      WHERE a.email = ?
+    `).get(email);
+
+    res.json({ verified: true, student });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not verify the code.', details: err.message });
   }
 });
 export default router;

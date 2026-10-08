@@ -8,7 +8,10 @@ import { fileURLToPath } from 'url';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import authRoutes from './routes/auth.js';
 import examRoutes from './routes/exams.js';
+import studentListRoutes from './routes/studentList.js';
+import { startReminderLoop } from './reminders.js';
 import './db.js'; // ensures DB + tables + seed data exist on startup
+
 
 dotenv.config();
 
@@ -29,6 +32,7 @@ app.get('/', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/exams', examRoutes);
+app.use('/api/student-list', studentListRoutes);
 
 app.post('/api/generate-questions', async (req, res) => {
   try {
@@ -74,4 +78,5 @@ Respond ONLY with valid JSON, no other text, no markdown formatting, in this exa
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`NEXAM AI backend running on http://localhost:${PORT}`);
+    startReminderLoop();
 });

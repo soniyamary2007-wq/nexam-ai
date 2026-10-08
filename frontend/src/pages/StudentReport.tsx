@@ -32,6 +32,10 @@ interface StudentRow {
   submissions: StudentSubmission[];
 }
 
+function formatDbTime(value: string | null) {
+  if (!value) return '—';
+  return new Date(value.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+}
 const API_BASE = 'http://localhost:5000/api';
 
 function StudentReport() {
@@ -191,7 +195,7 @@ function StudentReport() {
                               {sub.incident_count > 0 ? `! ${sub.incident_count} incident(s)` : '✓ Clear'}
                               {Boolean(sub.auto_submitted) && <small className="portal-table-sub">Auto-submitted</small>}
                             </td>
-                            <td>{new Date(sub.submitted_at).toLocaleString('en-IN')}</td>
+                            <td>formatDbTime(sub.submitted_at)</td>
                           </tr>
                         );
                       })

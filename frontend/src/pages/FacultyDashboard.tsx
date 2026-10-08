@@ -32,6 +32,10 @@ interface Submission {
   student_email?: string;
 }
 
+function formatDbTime(value: string | null) {
+  if (!value) return '—';
+  return new Date(value.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+}
 const API_BASE = 'http://localhost:5000/api';
 
 function FacultyDashboard() {
@@ -145,6 +149,7 @@ function FacultyDashboard() {
           </div>
           <Link to="/create-exam" className="exam-primary-btn">+ Create exam</Link>
           <Link to="/student-report" className="exam-outline-btn">View student report</Link>
+          <Link to="/student-list" className="exam-outline-btn">Manage student list</Link>
         </div>
 
         <section className="portal-stats">
@@ -231,7 +236,7 @@ function FacultyDashboard() {
                       <td><strong>{req.student_name}</strong><br /><small>{req.student_email}</small></td>
                       <td>{req.exam_title}</td>
                       <td>{req.reason || '—'}</td>
-                      <td>{new Date(req.requested_at).toLocaleString('en-IN')}</td>
+                      <td>formatDbTime(req.requested_at)</td>
                       <td style={{ display: 'flex', gap: 8 }}>
                         <button className="exam-outline-btn" onClick={() => resolveReattempt(req.id, 'approved')}>Approve</button>
                         <button className="faculty-delete-btn" onClick={() => resolveReattempt(req.id, 'denied')}>Deny</button>
@@ -296,7 +301,7 @@ function FacultyDashboard() {
                           {sub.incident_count > 0 ? `! ${sub.incident_count} incident(s)` : '✓ Clear'}
                           {Boolean(sub.auto_submitted) && <small className="portal-table-sub">Auto-submitted</small>}
                         </td>
-                        <td>{new Date(sub.submitted_at).toLocaleString('en-IN')}</td>
+                        <td>formatDbTime(sub.submitted_at)</td>
                         <td>
                           <Link to={`/faculty/exam/${sub.exam_id}/snapshots`} className="exam-outline-btn">
                             View snapshots

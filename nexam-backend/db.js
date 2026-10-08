@@ -124,6 +124,32 @@ try {
 } catch {
   // column already exists, nothing to do
 } 
+try {
+  db.exec('ALTER TABLE exams ADD COLUMN closing_reminder_sent INTEGER DEFAULT 0');
+} catch {
+  // column already exists
+}
+db.exec(`
+CREATE TABLE IF NOT EXISTS approved_students (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  roll_no TEXT NOT NULL,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(class_id, roll_no)
+);
+`);
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS email_codes (
+  email TEXT PRIMARY KEY,
+  code TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  verified INTEGER NOT NULL DEFAULT 0
+);
+`);
 const collegeCount = db.prepare('SELECT COUNT(*) AS c FROM colleges').get().c;
 
 if (collegeCount === 0) {
